@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,10 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package version
+package authz
 
-// Version exposes the current ADK Go version, used for llm request tagging.
-//
-// The trailing annotation marks this line for Release Please, which rewrites
-// the value in the release PR. Do not edit it by hand.
-const Version = "2.4.0" // x-release-please-version
+import (
+	"context"
+)
+
+// noop is an [Authorizer] which allows any [authn.Caller] to act as any userID
+type noop struct{}
+
+// NewNoop creates a new Noop [Authorizer] - allows any [authn.Caller] to act as any userID.
+func NewNoop() Authorizer {
+	return &noop{}
+}
+
+// CanActAsUser implements [Authorizer].
+func (p *noop) CanActAsUser(_ context.Context, userID string) error {
+	return nil
+}
+
+var _ Authorizer = &noop{}
