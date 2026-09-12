@@ -227,6 +227,8 @@ func (s *inMemoryService) AppendEvent(ctx context.Context, curSession Session, e
 	}
 
 	// update the in-memory session
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
 	if err := sess.appendEvent(event); err != nil {
 		return fmt.Errorf("fail to set state on appendEvent: %w", err)
 	}
@@ -363,8 +365,6 @@ func (s *session) appendEvent(event *Event) error {
 		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := updateSessionState(s, event); err != nil {
 		return fmt.Errorf("error on appendEvent: %w", err)
 	}
