@@ -227,6 +227,8 @@ func (s *inMemoryService) AppendEvent(ctx context.Context, curSession Session, e
 	}
 
 	// update the in-memory session
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
 	if err := sess.appendEvent(event); err != nil {
 		return fmt.Errorf("fail to set state on appendEvent: %w", err)
 	}
@@ -363,9 +365,6 @@ func (s *session) appendEvent(event *Event) error {
 		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if err := updateSessionState(s, event); err != nil {
 		return fmt.Errorf("error on appendEvent: %w", err)
 	}
@@ -461,6 +460,11 @@ func trimTempDeltaState(event *Event) *Event {
 	// Create a copy of the event to avoid mutating the original.
 	eventCopy := *event
 	eventCopy.Actions.StateDelta = filteredStateDelta
+	eventCopy.Actions.ArtifactDelta = maps.Clone(event.Actions.ArtifactDelta)
+	eventCopy.Actions.RequestedToolConfirmations = maps.Clone(event.Actions.RequestedToolConfirmations)
+	eventCopy.Actions.Compaction = event.Actions.Compaction.clone()
+	eventCopy.LongRunningToolIDs = slices.Clone(event.LongRunningToolIDs)
+	eventCopy.Routes = slices.Clone(event.Routes)
 
 	return &eventCopy
 }
