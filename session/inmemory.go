@@ -227,6 +227,8 @@ func (s *inMemoryService) AppendEvent(ctx context.Context, curSession Session, e
 	}
 
 	// update the in-memory session
+	// Keep the session locked until eventCopy clones the action maps. Otherwise,
+	// concurrent Session.Events readers can mutate them, potentially causing a data race.
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if err := sess.appendEvent(event); err != nil {
@@ -458,6 +460,8 @@ func trimTempDeltaState(event *Event) *Event {
 	}
 
 	// Create a copy of the event to avoid mutating the original.
+	// The live session exposes this event through Session.Events. Clone its
+	// remaining action maps so they are not shared with the caller's event.
 	eventCopy := *event
 	eventCopy.Actions.StateDelta = filteredStateDelta
 	eventCopy.Actions.ArtifactDelta = maps.Clone(event.Actions.ArtifactDelta)
