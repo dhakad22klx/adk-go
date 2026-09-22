@@ -621,6 +621,8 @@ func TestArtifactDeltaRaceNoTemp(t *testing.T) {
 	}
 	close(stop)
 	<-done
+}
+
 // TestInMemoryService_AppendEvent_AllTempKeysStrippedKeepsEmptyDelta covers the
 // one input class where stripping changes the shape of the stored delta rather
 // than its contents: every key is temp:, so the map goes from populated to
