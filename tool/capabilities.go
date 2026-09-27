@@ -90,6 +90,10 @@ type SkipSummarizationResultDisplayer interface {
 // wrapper overriding Run can embed [FunctionTool], implement Run, and return the
 // embedded tool from Unwrap. Embedding only [Tool] and adding Run does not
 // implement FunctionTool because Declaration and ProcessRequest are also required.
+//
+// An inherited streaming capability still takes precedence over a wrapper's Run.
+// To intercept streaming calls, implement [StreamingFunctionTool] and override
+// RunStream; otherwise, the inner tool's stream is used directly.
 type Wrapper interface {
 	Tool
 	Unwrap() Tool
