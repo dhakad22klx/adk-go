@@ -32,6 +32,7 @@ import (
 	"google.golang.org/genai"
 
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/internal/adkcontext"
 	"google.golang.org/adk/v2/internal/agent/parentmap"
 	"google.golang.org/adk/v2/internal/agent/runconfig"
 	icontext "google.golang.org/adk/v2/internal/context"
@@ -606,6 +607,15 @@ func (f *Flow) RunLive(ctx agent.InvocationContext) (agent.LiveSession, iter.Seq
 			for !reconnect {
 				select {
 				case ev := <-eventsChan:
+					fnCalls := utils.FunctionCalls(ev.LLMResponse.Content)
+					var tools map[string]tool.Tool
+					if len(fnCalls) > 0 {
+						tools = make(map[string]tool.Tool, len(f.Tools))
+						for _, t := range f.Tools {
+							tools[t.Name()] = t
+						}
+						ev.LongRunningToolIDs = findLongRunningFunctionCallIDs(ev.LLMResponse.Content, tools)
+					}
 					if !sess.pushEvent(ev) {
 						cleanup()
 						return
@@ -643,13 +653,7 @@ func (f *Flow) RunLive(ctx agent.InvocationContext) (agent.LiveSession, iter.Seq
 							}
 						}
 					}
-					// Handle function calls if present in the event
-					fnCalls := utils.FunctionCalls(ev.LLMResponse.Content)
 					if len(fnCalls) > 0 {
-						tools := make(map[string]tool.Tool)
-						for _, t := range f.Tools {
-							tools[t.Name()] = t
-						}
 						respEv, err := f.handleFunctionCalls(ctx, tools, &ev.LLMResponse, nil, sess)
 						if err != nil {
 							sess.pushError(err)
@@ -1063,6 +1067,10 @@ func generateContent(ctx agent.InvocationContext, m model.LLM, req *model.LLMReq
 		// Ensure that the span is ended in case of error or if none final responses are yielded before the yield returns false.
 		defer endSpanAndTrackResult()
 		for resp, err := range m.GenerateContent(ctx, req, useStream) {
+			if resp == nil && err == nil {
+				// Third-party model implementations may yield an empty response.
+				continue
+			}
 			response := newResponseWithEventID(ctx, resp)
 			lastResponse = *response
 			lastErr = err
@@ -1213,6 +1221,12 @@ Suggested fixes:
 
 type cancelledToolContext struct {
 	agent.Context
+	// Marker: this is one of ADK's own context types, so the identity procedure
+	// asks it rather than reading a session it does not have. Without it the
+	// procedure would fall back to the embedded tool context's Session(), which
+	// is nil by design, and a streaming tool that re-derives its context would
+	// lose the acting user.
+	adkcontext.Marker
 	cancelCtx context.Context
 }
 
@@ -1229,6 +1243,12 @@ func (c *cancelledToolContext) Deadline() (deadline time.Time, ok bool) {
 }
 
 func (c *cancelledToolContext) Value(key any) any {
+	// Fails closed rather than dereferencing: this type carries the identity
+	// marker, so the identity procedure asks it directly, and that ask can arrive
+	// from inside http.RoundTripper where net/http does not recover.
+	if c == nil || c.cancelCtx == nil {
+		return nil
+	}
 	return c.cancelCtx.Value(key)
 }
 
@@ -1705,3 +1725,8 @@ type pluginManager interface {
 	RunAfterToolCallback(ctx agent.Context, t tool.Tool, args, result map[string]any, err error) (map[string]any, error)
 	RunOnToolErrorCallback(ctx agent.Context, t tool.Tool, args map[string]any, err error) (map[string]any, error)
 }
+
+// Asserted rather than left to the [adkcontext.Marker] embed: dropping the embed
+// would also drop the import, breaking the build for an unrelated reason. This
+// fails on the type.
+var _ adkcontext.Source = (*cancelledToolContext)(nil)
