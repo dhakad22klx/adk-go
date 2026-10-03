@@ -234,7 +234,7 @@ func (s *inMemoryService) AppendEvent(ctx context.Context, curSession Session, e
 
 	// update the in-memory session
 	// Keep the session locked until AppendEvent finishes all reads of event.
-	// Otherwise, Session.Events readers can race map cloning and StateDelta extraction.
+	// Otherwise, concurrent Session.Events readers can mutate its action maps during those reads.
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if err := sess.appendEvent(event); err != nil {
