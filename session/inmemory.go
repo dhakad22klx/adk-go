@@ -234,7 +234,8 @@ func (s *inMemoryService) AppendEvent(ctx context.Context, curSession Session, e
 
 	// update the in-memory session
 	// Keep the session locked until AppendEvent finishes all reads of event.
-	// Otherwise, concurrent Session.Events readers can mutate its action maps during those reads.
+	// Otherwise, concurrent Session.Events readers can mutate its action maps
+	// during those reads, potentially causing a fatal concurrent map read write runtime throw.
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if err := sess.appendEvent(event); err != nil {

@@ -543,8 +543,11 @@ func TestInMemoryService_AppendEvent_CopiesCompaction(t *testing.T) {
 	}
 }
 
-// Concurrent writes through Session.Events must not race AppendEvent's reads
-// of the newly appended *Event, including map cloning and StateDelta extraction.
+// TestInMemoryService_AppendEvent_ConcurrentActionMapWrites checks that
+// AppendEvent finishes reading the current *Event, including cloning its
+// action maps and extracting StateDelta, before Session.Events exposes it to
+// concurrent readers that could mutate those maps, potentially causing a fatal
+// concurrent map read write runtime throw.
 func TestInMemoryService_AppendEvent_ConcurrentActionMapWrites(t *testing.T) {
 	for _, actionMap := range []struct {
 		name  string
@@ -692,17 +695,11 @@ func TestInMemoryService_AppendEvent_AllTempKeysStrippedKeepsEmptyDelta(t *testi
 // that the canonical record's StateDelta is a map of its own, not the one the
 // live session handle publishes.
 //
-// AppendEvent builds that field from the delta the session returns while
-// holding only the service lock, never the session's own mutex. The map the
-// session appends to its event list is reachable by anyone holding the handle
-// the moment that mutex is released, so if the canonical record takes the map
-// itself rather than a copy made under the lock, a caller walking session
-// history writes into a map AppendEvent reads. A concurrent map read and write
-// is a runtime throw rather than a recoverable panic.
-//
-// Sharing is what this can observe; the lock the copy is taken under is not.
-// Proving that needs a concurrent writer, which reproduces only
-// probabilistically and takes the test binary down with it when it fires.
+// AppendEvent holds the session mutex until it finishes reading event.
+// After it returns, writes through the live handle must not change the
+// canonical record.
+// TestInMemoryService_AppendEvent_ConcurrentActionMapWrites checks that the
+// session stays locked until AppendEvent finishes all event reads.
 func TestInMemoryService_AppendEvent_CanonicalRecordDoesNotAliasLiveDelta(t *testing.T) {
 	// Both delta shapes matter. trimTempDeltaState returns the event unchanged
 	// when it strips nothing, so with no temp: key the live session publishes
