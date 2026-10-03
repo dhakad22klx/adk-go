@@ -233,8 +233,8 @@ func (s *inMemoryService) AppendEvent(ctx context.Context, curSession Session, e
 	trimmedDelta := maps.Clone(trimTempDeltaState(event).Actions.StateDelta)
 
 	// update the in-memory session
-	// Keep the session locked until eventCopy clones the action maps. Otherwise,
-	// concurrent Session.Events readers can mutate them, potentially causing a data race.
+	// Keep the session locked until AppendEvent finishes all reads of event.
+	// Otherwise, Session.Events readers can race map cloning and StateDelta extraction.
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if err := sess.appendEvent(event); err != nil {
@@ -372,6 +372,7 @@ func (s *session) LastUpdateTime() time.Time {
 	return s.updatedAt
 }
 
+// appendEvent requires the caller to hold s.mu for writing.
 func (s *session) appendEvent(event *Event) error {
 	if event.Partial {
 		return nil
@@ -470,12 +471,8 @@ func trimTempDeltaState(event *Event) *Event {
 	}
 
 	// Create a copy of the event to avoid mutating the original.
-	// The live session exposes this event through Session.Events. Clone its
-	// remaining action maps so they are not shared with the caller's event.
 	eventCopy := *event
 	eventCopy.Actions.StateDelta = filteredStateDelta
-	eventCopy.Actions.ArtifactDelta = maps.Clone(event.Actions.ArtifactDelta)
-	eventCopy.Actions.RequestedToolConfirmations = maps.Clone(event.Actions.RequestedToolConfirmations)
 
 	return &eventCopy
 }
