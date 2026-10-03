@@ -27,6 +27,7 @@ import (
 	"google.golang.org/adk/v2/platform"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/session/sessiontestsuite"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 )
 
 func Test_inMemoryService_CreateUsesProviders(t *testing.T) {
@@ -542,85 +543,99 @@ func TestInMemoryService_AppendEvent_CopiesCompaction(t *testing.T) {
 	}
 }
 
-func TestArtifactDeltaRace(t *testing.T) {
-	svc := session.InMemoryService()
-	cr, _ := svc.Create(t.Context(), &session.CreateRequest{AppName: "app", UserID: "u"})
-	live := cr.Session
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			evs := live.Events()
-			if n := evs.Len(); n > 0 {
-				if e := evs.At(n - 1); e != nil && e.Actions.ArtifactDelta != nil {
-					e.Actions.ArtifactDelta["injected"] = 1
-				}
-			}
-		}
-	}()
-	for i := range 20000 {
-		ev := &session.Event{
-			ID:        fmt.Sprintf("e%d", i),
-			Timestamp: time.Now(),
-			Actions: session.EventActions{
-				StateDelta:    map[string]any{"temp:t": i, "k": i},
-				ArtifactDelta: map[string]int64{"a": int64(i)},
+// Concurrent writes through Session.Events must not race AppendEvent's reads
+// of the newly appended *Event, including map cloning and StateDelta extraction.
+func TestInMemoryService_AppendEvent_ConcurrentActionMapWrites(t *testing.T) {
+	for _, actionMap := range []struct {
+		name  string
+		write func(*session.Event)
+	}{
+		{
+			name: "ArtifactDelta",
+			write: func(event *session.Event) {
+				event.Actions.ArtifactDelta["injected"] = 1
 			},
-		}
-		if err := svc.AppendEvent(t.Context(), live, ev); err != nil {
-			t.Fatal(err)
+		},
+		{
+			name: "RequestedToolConfirmations",
+			write: func(event *session.Event) {
+				event.Actions.RequestedToolConfirmations["injected"] = toolconfirmation.ToolConfirmation{Confirmed: true}
+			},
+		},
+		{
+			name: "StateDelta",
+			write: func(event *session.Event) {
+				event.Actions.StateDelta["injected"] = 1
+			},
+		},
+	} {
+		for _, deltaShape := range []string{"with_temp", "without_temp", "nil"} {
+			// A nil StateDelta cannot be written through the live event.
+			if actionMap.name == "StateDelta" && deltaShape == "nil" {
+				continue
+			}
+			t.Run(actionMap.name+"/"+deltaShape, func(t *testing.T) {
+				ctx := t.Context()
+				svc := session.InMemoryService()
+				cr, err := svc.Create(ctx, &session.CreateRequest{AppName: "app", UserID: "u"})
+				if err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+				live := cr.Session
+				stop := make(chan struct{})
+				done := make(chan struct{})
+				firstWrite := make(chan struct{})
+				t.Cleanup(func() {
+					close(stop)
+					<-done
+				})
+				go func() {
+					defer close(done)
+					wrote := false
+					for {
+						select {
+						case <-stop:
+							return
+						default:
+						}
+						evs := live.Events()
+						if n := evs.Len(); n > 0 {
+							actionMap.write(evs.At(n - 1))
+							if !wrote {
+								close(firstWrite)
+								wrote = true
+							}
+						}
+					}
+				}()
+				for i := range 20000 {
+					var delta map[string]any
+					switch deltaShape {
+					case "with_temp":
+						delta = map[string]any{"temp:t": i, "k": i}
+					case "without_temp":
+						delta = map[string]any{"k": i}
+					}
+					ev := &session.Event{
+						ID:        fmt.Sprintf("e%d", i),
+						Timestamp: time.Now(),
+						Actions: session.EventActions{
+							StateDelta:                 delta,
+							ArtifactDelta:              map[string]int64{"a": int64(i)},
+							RequestedToolConfirmations: map[string]toolconfirmation.ToolConfirmation{"call": {}},
+						},
+					}
+					if err := svc.AppendEvent(ctx, live, ev); err != nil {
+						t.Fatalf("AppendEvent: %v", err)
+					}
+					if i == 0 {
+						// Ensure the history writer runs before the remaining appends.
+						<-firstWrite
+					}
+				}
+			})
 		}
 	}
-	close(stop)
-	<-done
-}
-
-// When No temporary state delta key exist, trimTempDeltaState return exact event
-// So, events published into sess.events shares actions maps with concurrent Session.Event() readers,
-// which may be read or cloned by AppendEvent casuing race condition.
-func TestArtifactDeltaRaceNoTemp(t *testing.T) {
-	svc := session.InMemoryService()
-	cr, _ := svc.Create(t.Context(), &session.CreateRequest{AppName: "app", UserID: "u"})
-	live := cr.Session
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			evs := live.Events()
-			if n := evs.Len(); n > 0 {
-				if e := evs.At(n - 1); e != nil && e.Actions.ArtifactDelta != nil {
-					e.Actions.ArtifactDelta["injected"] = 1
-				}
-			}
-		}
-	}()
-	for i := range 20000 {
-		ev := &session.Event{
-			ID:        fmt.Sprintf("e%d", i),
-			Timestamp: time.Now(),
-			Actions: session.EventActions{
-				StateDelta:    map[string]any{"k": i},
-				ArtifactDelta: map[string]int64{"a": int64(i)},
-			},
-		}
-		if err := svc.AppendEvent(t.Context(), live, ev); err != nil {
-			t.Fatal(err)
-		}
-	}
-	close(stop)
-	<-done
 }
 
 // TestInMemoryService_AppendEvent_AllTempKeysStrippedKeepsEmptyDelta covers the
